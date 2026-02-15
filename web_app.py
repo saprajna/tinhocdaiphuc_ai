@@ -116,6 +116,28 @@ st.markdown("""
         background: linear-gradient(135deg, #0052cc 0%, #003d99 100%) !important;
         color: white !important;
     }
+    .zalo-btn {
+        display: inline-block;
+        width: 100%;
+        font-size: 1.15rem;
+        font-weight: 600;
+        padding: 0.85rem 1.5rem;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+        color: white !important;
+        text-align: center;
+        text-decoration: none;
+        border: none;
+        box-shadow: 0 4px 15px rgba(231, 76, 60, 0.3);
+        transition: all 0.3s ease;
+        cursor: pointer;
+    }
+    .zalo-btn:hover {
+        background: linear-gradient(135deg, #c0392b 0%, #a93226 100%);
+        box-shadow: 0 6px 20px rgba(231, 76, 60, 0.5);
+        transform: translateY(-2px);
+        color: white !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -209,7 +231,10 @@ def main():
                 zalo_message = "\n".join(msg_lines)
                 zalo_url = f"https://zalo.me/{ZALO_NUMBER}?text={quote(zalo_message)}"
                 st.markdown("")
-                st.link_button("💬 Chat Zalo & Đặt Ngay", zalo_url, type="primary", use_container_width=True)
+                st.markdown(
+                    f'<a href="{zalo_url}" target="_blank" class="zalo-btn">💬 Chat Zalo & Đặt Ngay</a>',
+                    unsafe_allow_html=True,
+                )
 
             with tab1:
                 render_tab(bo_van_phong, "Văn phòng")

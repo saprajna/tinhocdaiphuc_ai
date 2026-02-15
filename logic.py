@@ -131,6 +131,45 @@ def _ram_capacity_gb(ten_ram):
     return 16
 
 
+def _main_chi_ddr4(ten_main):
+    """Mainboard có 'D4' trong tên thì hỗ trợ DDR4."""
+    if pd.isna(ten_main):
+        return False
+    return "D4" in str(ten_main).upper()
+
+
+def _ram_is_ddr4(ten_ram):
+    """RAM là loại DDR4."""
+    if pd.isna(ten_ram):
+        return False
+    return "DDR4" in str(ten_ram).upper()
+
+
+def _ram_is_ddr5(ten_ram):
+    """RAM là loại DDR5."""
+    if pd.isna(ten_ram):
+        return False
+    return "DDR5" in str(ten_ram).upper()
+
+
+def _ram_compatible_with_main(ten_ram, ten_main):
+    """
+    RAM tương thích Main:
+    - Nếu Main có 'D4' → chỉ dùng DDR4
+    - Nếu Main không có 'D4' → ưu tiên DDR5, nhưng cũng cho phép DDR4 (một số main hỗ trợ cả 2)
+    """
+    if _main_chi_ddr4(ten_main):
+        # Main D4 chỉ dùng DDR4
+        return _ram_is_ddr4(ten_ram)
+    else:
+        # Main không D4: cho phép cả DDR4 và DDR5
+        return _ram_is_ddr4(ten_ram) or _ram_is_ddr5(ten_ram)
+
+
+# Tỷ lệ tối đa Nguồn + Case so với ngân sách (tối đa 20% để cân đối chi phí)
+NGUON_CASE_MAX_PERCENT = 0.20
+
+
 def _filter_candidates(df, budget, min_other_sum, top_k=MAX_PER_CATEGORY):
     """
     Lọc dòng có gia_vnd <= budget - min_other_sum.
@@ -243,6 +282,8 @@ def build_pc_hoan_chinh(so_tien_vnd, duong_dan_file="data.csv"):
         for main in mains_match:
             pm = int(main["gia_vnd"])
             for ram in rams_l:
+                if not _ram_compatible_with_main(ram.get("ten_linh_kien"), main.get("ten_linh_kien")):
+                    continue
                 pr = int(ram["gia_vnd"])
                 for vga in vgas_l:
                     pv = int(vga["gia_vnd"])
@@ -252,7 +293,10 @@ def build_pc_hoan_chinh(so_tien_vnd, duong_dan_file="data.csv"):
                     for nguon in nguons_ok:
                         pn = int(nguon["gia_vnd"])
                         for case in cases_l:
-                            tong = pc + pm + pr + pv + pn + int(case["gia_vnd"])
+                            pcase = int(case["gia_vnd"])
+                            if (pn + pcase) > so_tien_vnd * NGUON_CASE_MAX_PERCENT:
+                                continue
+                            tong = pc + pm + pr + pv + pn + pcase
                             if tong < so_tien_vnd and tong > best_tong:
                                 best_tong = tong
                                 best_row = (cpu, main, ram, vga, nguon, case, tong)
@@ -313,17 +357,37 @@ def _build_one_with_filters(
     cases = price_ok(dfs["Case"], "Case")
 
     if nhu_cau == "van_phong":
-        cpus_igp = cpus[cpus["ten_linh_kien"].apply(_cpu_has_igp)]
-        cpus = cpus_igp if not cpus_igp.empty else cpus
+        # Ưu tiên CPU i5/i7 đời mới, có đồ họa tích hợp
+        def _is_i5_i7(ten):
+            if pd.isna(ten):
+                return False
+            t = str(ten).upper()
+            return ("I5-" in t or "I7-" in t) and _cpu_has_igp(ten)
+        cpus_i5_i7 = cpus[cpus["ten_linh_kien"].apply(_is_i5_i7)]
+        if not cpus_i5_i7.empty:
+            cpus = cpus_i5_i7
+        else:
+            cpus_igp = cpus[cpus["ten_linh_kien"].apply(_cpu_has_igp)]
+            cpus = cpus_igp if not cpus_igp.empty else cpus
+        # RAM 16GB cho văn phòng
+        rams_16 = rams[rams["ten_linh_kien"].apply(lambda x: _ram_capacity_gb(x) == 16 or "16GB" in str(x))]
+        rams = rams_16 if not rams_16.empty else rams
+        # VGA rất rẻ hoặc không cần rời (lấy rẻ nhất)
         vgas_cheap = vgas[vgas["gia_vnd"] <= 2_500_000]
         vgas = vgas_cheap if not vgas_cheap.empty else vgas
+        # Nguồn văn phòng chỉ 450W–600W tối đa
+        nguon_vp = nguon_df[nguon_df["ten_linh_kien"].apply(lambda x: 450 <= _lay_cong_suat_nguon_w(x) <= 600)]
+        nguon_df = nguon_vp if not nguon_vp.empty else nguon_df[nguon_df["ten_linh_kien"].apply(lambda x: _lay_cong_suat_nguon_w(x) <= 600)]
     elif nhu_cau == "choi_game":
-        vga_min = int(so_tien_vnd * 0.38)
-        vga_max = int(so_tien_vnd * 0.52)
+        # VGA ít nhất 35%, tối đa 50% ngân sách
+        vga_min = int(so_tien_vnd * 0.35)
+        vga_max = int(so_tien_vnd * 0.50)
         vgas_g = vgas[vgas["gia_vnd"].between(vga_min, vga_max)]
         vgas = vgas_g if not vgas_g.empty else vgas
+        # CPU tầm trung (i5, R5)
         cpus_mid = cpus[cpus["ten_linh_kien"].apply(lambda x: _cpu_tier(x) == 1)]
         cpus = cpus_mid if not cpus_mid.empty else cpus
+        # RAM 16GB
         rams_16 = rams[rams["ten_linh_kien"].apply(lambda x: _ram_capacity_gb(x) == 16 or "16GB" in str(x))]
         rams = rams_16 if not rams_16.empty else rams
     elif nhu_cau == "render":
@@ -395,6 +459,8 @@ def _build_one_with_filters(
             pc = int(cpu["gia_vnd"])
             pm = int(main["gia_vnd"])
             for ram in rams_l:
+                if not _ram_compatible_with_main(ram.get("ten_linh_kien"), main.get("ten_linh_kien")):
+                    continue
                 pr = int(ram["gia_vnd"])
                 for vga in vgas_l:
                     pv = int(vga["gia_vnd"])
@@ -404,7 +470,10 @@ def _build_one_with_filters(
                     for nguon in nguons_ok:
                         pn = int(nguon["gia_vnd"])
                         for case in cases_l:
-                            tong = pc + pm + pr + pv + pn + int(case["gia_vnd"])
+                            pcase = int(case["gia_vnd"])
+                            if (pn + pcase) > so_tien_vnd * NGUON_CASE_MAX_PERCENT:
+                                continue
+                            tong = pc + pm + pr + pv + pn + pcase
                             if tong < so_tien_vnd and tong > best_tong:
                                 best_tong = tong
                                 best_row = (cpu, main, ram, vga, nguon, case, tong)
