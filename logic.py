@@ -67,6 +67,70 @@ def _lay_cong_suat_nguon_w(ten_nguon):
     return int(match.group(1)) if match else 0
 
 
+def _cpu_tier(ten_cpu):
+    """Phân tầng CPU: 0=budget (Celeron,Pentium,i3,R3), 1=mid (i5,R5), 2=high (i7,i9,R7,R9)."""
+    if pd.isna(ten_cpu):
+        return 0
+    t = str(ten_cpu).upper()
+    if "CELERON" in t or "PENTIUM" in t or "I3-" in t or "RYZEN 3" in t or "4100" in t or "5300G" in t:
+        return 0
+    if "I5-" in t or "RYZEN 5" in t:
+        return 1
+    return 2  # i7, i9, R7, R9
+
+
+def _main_tier(ten_main):
+    """Phân tầng Main: 0=budget (H610,A520), 1=mid (B660,B760,B550,B650), 2=high (Z690,Z790,X570,X670)."""
+    if pd.isna(ten_main):
+        return 0
+    t = str(ten_main).upper()
+    if "H610" in t or "A520" in t:
+        return 0
+    if "B660" in t or "B760" in t or "B550" in t or "B650" in t:
+        return 1
+    return 2  # Z690, Z790, X570, X670
+
+
+def _cpu_main_can_pair(cpu_row, main_row):
+    """Cân đối: không chip yếu đi với main đắt (Celeron + Z790). Main tầm không vượt quá CPU + 1; giá main <= 2.5x CPU."""
+    tc, tm = _cpu_tier(cpu_row.get("ten_linh_kien")), _main_tier(main_row.get("ten_linh_kien"))
+    if tm > tc + 1:
+        return False
+    pc = int(cpu_row.get("gia_vnd", 0))
+    pm = int(main_row.get("gia_vnd", 0))
+    if pc <= 0:
+        return True
+    if pm > 2.5 * pc:
+        return False
+    return True
+
+
+def _cpu_has_igp(ten_cpu):
+    """CPU có đồ họa tích hợp: Intel không F, AMD có G."""
+    if pd.isna(ten_cpu):
+        return False
+    t = str(ten_cpu).upper()
+    if "INTEL" in t and "F" not in t:
+        return True
+    if "G" in t and ("RYZEN" in t or "5600G" in t or "5300G" in t):
+        return True
+    return False
+
+
+def _ram_capacity_gb(ten_ram):
+    """Lấy dung lượng RAM (GB) từ tên, ưu tiên số lớn (32GB, 2x32)."""
+    if pd.isna(ten_ram):
+        return 0
+    s = str(ten_ram)
+    m = re.search(r"2\s*[xX×]\s*32", s)
+    if m:
+        return 64
+    for x in (32, 16, 8):
+        if str(x) + "GB" in s or str(x) + " GB" in s:
+            return x
+    return 16
+
+
 def _filter_candidates(df, budget, min_other_sum, top_k=MAX_PER_CATEGORY):
     """
     Lọc dòng có gia_vnd <= budget - min_other_sum.
@@ -216,6 +280,172 @@ def build_pc_hoan_chinh(so_tien_vnd, duong_dan_file="data.csv"):
         "case": row_to_dict(case),
         "tong_tien": tong,
     }
+
+
+def _build_one_with_filters(
+    df, so_tien_vnd, nhu_cau, duong_dan_file="data.csv"
+):
+    """
+    Ghép 1 bộ PC theo nhu_cau (van_phong | choi_game | render), có kiểm tra cân đối CPU-Main.
+    Trả về dict build hoặc None.
+    """
+    if df is None or df.empty:
+        return None
+    loai = ("Chip", "Main", "Ram", "VGA", "Nguon", "Case")
+    dfs = {k: df[df["loai"].str.strip() == k].reset_index(drop=True) for k in loai}
+    if any(dfs[k].empty for k in loai):
+        return None
+
+    min_sums = {}
+    for k in loai:
+        others = [loai[j] for j in range(6) if loai[j] != k]
+        min_sums[k] = sum(dfs[o]["gia_vnd"].min() for o in others)
+
+    def price_ok(frame, key):
+        return frame[frame["gia_vnd"] <= so_tien_vnd - min_sums[key]]
+
+    # Lọc theo nhu cầu
+    cpus = price_ok(dfs["Chip"], "Chip")
+    mains_all = price_ok(dfs["Main"], "Main")
+    rams = price_ok(dfs["Ram"], "Ram")
+    vgas = price_ok(dfs["VGA"], "VGA")
+    nguon_df = price_ok(dfs["Nguon"], "Nguon")
+    cases = price_ok(dfs["Case"], "Case")
+
+    if nhu_cau == "van_phong":
+        cpus_igp = cpus[cpus["ten_linh_kien"].apply(_cpu_has_igp)]
+        cpus = cpus_igp if not cpus_igp.empty else cpus
+        vgas_cheap = vgas[vgas["gia_vnd"] <= 2_500_000]
+        vgas = vgas_cheap if not vgas_cheap.empty else vgas
+    elif nhu_cau == "choi_game":
+        vga_min = int(so_tien_vnd * 0.38)
+        vga_max = int(so_tien_vnd * 0.52)
+        vgas_g = vgas[vgas["gia_vnd"].between(vga_min, vga_max)]
+        vgas = vgas_g if not vgas_g.empty else vgas
+        cpus_mid = cpus[cpus["ten_linh_kien"].apply(lambda x: _cpu_tier(x) == 1)]
+        cpus = cpus_mid if not cpus_mid.empty else cpus
+        rams_16 = rams[rams["ten_linh_kien"].apply(lambda x: _ram_capacity_gb(x) == 16 or "16GB" in str(x))]
+        rams = rams_16 if not rams_16.empty else rams
+    elif nhu_cau == "render":
+        cpus_high = cpus[cpus["ten_linh_kien"].apply(lambda x: _cpu_tier(x) == 2)]
+        cpus = cpus_high if not cpus_high.empty else cpus
+        rams_32 = rams[rams["ten_linh_kien"].apply(lambda x: _ram_capacity_gb(x) >= 32)]
+        rams = rams_32 if not rams_32.empty else rams
+        vgas_mid = vgas[vgas["gia_vnd"] >= 4_000_000]
+        vgas = vgas_mid if not vgas_mid.empty else vgas
+
+    if cpus.empty or mains_all.empty or rams.empty or vgas.empty or nguon_df.empty or cases.empty:
+        return None
+
+    # Giới hạn ứng viên, đảm bảo đa dạng
+    k = min(MAX_PER_CATEGORY, len(cpus))
+    cpus = pd.concat([cpus.nlargest(k // 2, "gia_vnd"), cpus.nsmallest(k // 2, "gia_vnd")]).drop_duplicates().head(MAX_PER_CATEGORY)
+    k = min(MAX_PER_CATEGORY, len(rams))
+    rams = pd.concat([rams.nlargest(k // 2, "gia_vnd"), rams.nsmallest(k // 2, "gia_vnd")]).drop_duplicates().head(MAX_PER_CATEGORY)
+    k = min(MAX_PER_CATEGORY, len(vgas))
+    vgas = pd.concat([vgas.nlargest(k // 2, "gia_vnd"), vgas.nsmallest(k // 2, "gia_vnd")]).drop_duplicates().head(MAX_PER_CATEGORY)
+    k = min(MAX_PER_CATEGORY, len(cases))
+    cases = pd.concat([cases.nlargest(k // 2, "gia_vnd"), cases.nsmallest(k // 2, "gia_vnd")]).drop_duplicates().head(MAX_PER_CATEGORY)
+
+    main_parts = []
+    for chip in ("Intel", "AMD"):
+        sub = mains_all[mains_all["chip_tuong_thich"].fillna("").astype(str).str.strip().str.lower() == chip.lower()]
+        if sub.empty:
+            continue
+        k = min(MAX_PER_CATEGORY // 2, len(sub))
+        hi = sub.nlargest(k // 2, "gia_vnd")
+        lo = sub.nsmallest(k // 2, "gia_vnd")
+        main_parts.append(pd.concat([hi, lo], ignore_index=True).drop_duplicates())
+    if not main_parts:
+        return None
+    mains = pd.concat(main_parts, ignore_index=True).drop_duplicates()
+    if mains.empty:
+        return None
+
+    nguon_high_w = nguon_df[nguon_df["ten_linh_kien"].apply(_lay_cong_suat_nguon_w) >= 600]
+    nguons_top = nguon_df.nlargest(MAX_PER_CATEGORY // 2, "gia_vnd")
+    nguons_high = nguon_high_w.nlargest(MAX_PER_CATEGORY // 2, "gia_vnd") if not nguon_high_w.empty else pd.DataFrame()
+    nguons = pd.concat([nguons_top, nguons_high], ignore_index=True).drop_duplicates().head(MAX_PER_CATEGORY)
+    if nguons.empty:
+        return None
+
+    def to_list_of_dict(frame):
+        return [row.to_dict() for _, row in frame.iterrows()]
+
+    cpus_l = to_list_of_dict(cpus)
+    mains_l = to_list_of_dict(mains)
+    rams_l = to_list_of_dict(rams)
+    vgas_l = to_list_of_dict(vgas)
+    nguons_l = to_list_of_dict(nguons)
+    cases_l = to_list_of_dict(cases)
+    nguons_high_l = [n for n in nguons_l if _lay_cong_suat_nguon_w(n.get("ten_linh_kien")) >= 600]
+    nguons_low_l = [n for n in nguons_l if _lay_cong_suat_nguon_w(n.get("ten_linh_kien")) < 600]
+
+    best_tong = 0
+    best_row = None
+
+    for cpu in cpus_l:
+        nha_sx = str(cpu.get("nha_san_xuat") or "").strip().lower()
+        if not nha_sx:
+            continue
+        mains_match = [m for m in mains_l if (m.get("chip_tuong_thich") or "").strip().lower() == nha_sx]
+        for main in mains_match:
+            if not _cpu_main_can_pair(cpu, main):
+                continue
+            pc = int(cpu["gia_vnd"])
+            pm = int(main["gia_vnd"])
+            for ram in rams_l:
+                pr = int(ram["gia_vnd"])
+                for vga in vgas_l:
+                    pv = int(vga["gia_vnd"])
+                    nguons_ok = nguons_high_l if _vga_can_nguon_cao(vga.get("ten_linh_kien")) else (nguons_high_l + nguons_low_l)
+                    if not nguons_ok:
+                        continue
+                    for nguon in nguons_ok:
+                        pn = int(nguon["gia_vnd"])
+                        for case in cases_l:
+                            tong = pc + pm + pr + pv + pn + int(case["gia_vnd"])
+                            if tong < so_tien_vnd and tong > best_tong:
+                                best_tong = tong
+                                best_row = (cpu, main, ram, vga, nguon, case, tong)
+
+    if best_row is None:
+        return None
+    cpu, main, ram, vga, nguon, case, tong = best_row
+
+    def row_to_dict(r):
+        d = dict(r)
+        for k, v in d.items():
+            if isinstance(v, float) and (v != v or v == float("inf")):
+                d[k] = ""
+            elif isinstance(v, float) and k == "gia_vnd":
+                d[k] = int(v)
+        d["gia_vnd"] = int(d["gia_vnd"])
+        return d
+
+    return {
+        "cpu": row_to_dict(cpu),
+        "main": row_to_dict(main),
+        "ram": row_to_dict(ram),
+        "vga": row_to_dict(vga),
+        "nguon": row_to_dict(nguon),
+        "case": row_to_dict(case),
+        "tong_tien": tong,
+    }
+
+
+def build_pc_theo_nhu_cau(ngan_sach, nhu_cau, duong_dan_file="data.csv"):
+    """
+    Ghép 1 bộ PC theo nhu cầu: van_phong | choi_game | render.
+    - Văn phòng: CPU có IGP, VGA rất rẻ/không cần rời, Main bền, cân đối CPU-Main.
+    - Chơi game: 40-50% ngân sách VGA, CPU tầm trung, RAM 16GB, cân đối CPU-Main.
+    - Render/Đồ họa: CPU nhiều nhân, RAM 32GB+, VGA khá, cân đối CPU-Main.
+    Trả về dict build hoặc None. Luôn kiểm tra cân đối (không Celeron + Z790).
+    """
+    if nhu_cau not in ("van_phong", "choi_game", "render"):
+        return None
+    df = _load_df(duong_dan_file)
+    return _build_one_with_filters(df, int(ngan_sach), nhu_cau, duong_dan_file)
 
 
 def loc_theo_ngan_sach(so_tien_vnd, duong_dan_file="data.csv"):

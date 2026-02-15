@@ -3,7 +3,7 @@
 
 import streamlit as st
 from urllib.parse import quote
-from logic import build_pc_hoan_chinh, dinh_dang_tien
+from logic import build_pc_theo_nhu_cau, dinh_dang_tien
 
 # Số Zalo nhận đặt hàng (sửa tại đây khi cần)
 ZALO_NUMBER = "0938394505"
@@ -120,117 +120,103 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def parse_budget(text):
-    """Chuyển chuỗi nhập (15.000.000 hoặc 15tr) thành số VNĐ."""
-    if not text or not str(text).strip():
-        return None
-    s = str(text).replace(" ", "").replace(".", "").replace(",", "").strip().lower()
-    if s.endswith("tr"):
-        try:
-            return int(float(s.replace("tr", "").strip()) * 1_000_000)
-        except ValueError:
-            return None
-    if "trieu" in s or "triệu" in s:
-        try:
-            return int(float(s.replace("trieu", "").replace("triệu", "").strip()) * 1_000_000)
-        except ValueError:
-            return None
-    try:
-        return int(s)
-    except ValueError:
-        return None
-
-
 def main():
     st.markdown('<p class="main-title">TINHOCDAIPHUC.COM</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">AI TƯ VẤN CẤU HÌNH PC — Chọn 6 món: CPU + Main + RAM + VGA + Nguồn + Case</p>', unsafe_allow_html=True)
 
     col_input, col_btn = st.columns([2, 1])
     with col_input:
-        budget_raw = st.text_input(
-            "Nhập ngân sách (VNĐ)",
-            value="15.000.000",
-            placeholder="Ví dụ: 15.000.000 hoặc 20tr",
-            label_visibility="collapsed",
+        so_tien = st.number_input(
+            "Nhập ngân sách của bạn (VNĐ):",
+            min_value=0,
+            value=15000000,
+            step=500000,
+            format="%d",
+            help="Ví dụ: 15.000.000",
         )
+        st.write(f"Số tiền đã nhập: **{so_tien:,.0f} VNĐ**".replace(",", "."))
     with col_btn:
-        st.write("")  # căn nút xuống cùng hàng
+        st.write("")
         st.write("")
         search_clicked = st.button("🔍 Tìm cấu hình ngay", use_container_width=True)
 
     if search_clicked:
-        so_tien = parse_budget(budget_raw) if budget_raw else None
-        if so_tien is None or so_tien <= 0:
-            st.error("Vui lòng nhập số tiền hợp lệ (ví dụ: 15000000 hoặc 15tr).")
-            return
+        so_tien_int = int(so_tien)
+        if so_tien_int <= 0:
+            st.error("Vui lòng nhập số tiền lớn hơn 0 (Ví dụ: 15.000.000).")
+        else:
+            bo_van_phong = build_pc_theo_nhu_cau(so_tien_int, "van_phong")
+            bo_choi_game = build_pc_theo_nhu_cau(so_tien_int, "choi_game")
+            bo_render = build_pc_theo_nhu_cau(so_tien_int, "render")
 
-        bo_pc = build_pc_hoan_chinh(so_tien)
-        if not bo_pc:
-            st.markdown(
-                '<p class="no-result">Không ghép được bộ PC trong ngân sách này. '
-                'Cần đủ 6 món (CPU + Main + RAM + VGA + Nguồn + Case); VGA cao cần nguồn ≥600W. Thử tăng ngân sách.</p>',
-                unsafe_allow_html=True,
-            )
-            return
+            st.success(f"Đã tìm 3 phương án trong ngân sách **{dinh_dang_tien(so_tien_int)}**. Chọn tab phù hợp nhu cầu.")
+            st.markdown("---")
 
-        c = bo_pc
-        items = [
-            ("1. CPU", c["cpu"]["ten_linh_kien"], c["cpu"]["gia_vnd"]),
-            ("2. Mainboard", c["main"]["ten_linh_kien"], c["main"]["gia_vnd"]),
-            ("3. RAM", c["ram"]["ten_linh_kien"], c["ram"]["gia_vnd"]),
-            ("4. VGA", c["vga"]["ten_linh_kien"], c["vga"]["gia_vnd"]),
-            ("5. Nguồn", c["nguon"]["ten_linh_kien"], c["nguon"]["gia_vnd"]),
-            ("6. Case", c["case"]["ten_linh_kien"], c["case"]["gia_vnd"]),
-        ]
+            tab1, tab2, tab3 = st.tabs(["📁 Văn phòng", "🎮 Chơi Game", "🎬 Render & Đồ họa"])
 
-        st.success(f"Đã tìm cấu hình trong ngân sách **{dinh_dang_tien(so_tien)}** (CPU & Main tương thích, VGA cao dùng nguồn ≥600W).")
-        st.markdown("---")
-
-        # Hiển thị 6 thẻ: 2 cột x 3 hàng
-        for i in range(0, 6, 2):
-            cols = st.columns(2)
-            for j, col in enumerate(cols):
-                idx = i + j
-                if idx >= len(items):
-                    break
-                label, name, price = items[idx]
-                with col:
+            def render_tab(bo_pc, nhu_cau_label):
+                if not bo_pc:
                     st.markdown(
-                        f'<div class="card-box">'
-                        f'<div class="card-label">{label}</div>'
-                        f'<div class="card-name">{name}</div>'
-                        f'<div class="card-price">{dinh_dang_tien(price)}</div>'
-                        f'</div>',
+                        '<p class="no-result">Không ghép được bộ PC theo nhu cầu này trong ngân sách. Thử tăng ngân sách hoặc chọn tab khác.</p>',
                         unsafe_allow_html=True,
                     )
+                    return
+                c = bo_pc
+                items = [
+                    ("1. CPU", c["cpu"]["ten_linh_kien"], c["cpu"]["gia_vnd"]),
+                    ("2. Mainboard", c["main"]["ten_linh_kien"], c["main"]["gia_vnd"]),
+                    ("3. RAM", c["ram"]["ten_linh_kien"], c["ram"]["gia_vnd"]),
+                    ("4. VGA", c["vga"]["ten_linh_kien"], c["vga"]["gia_vnd"]),
+                    ("5. Nguồn", c["nguon"]["ten_linh_kien"], c["nguon"]["gia_vnd"]),
+                    ("6. Case", c["case"]["ten_linh_kien"], c["case"]["gia_vnd"]),
+                ]
+                for i in range(0, 6, 2):
+                    cols = st.columns(2)
+                    for j, col in enumerate(cols):
+                        idx = i + j
+                        if idx >= len(items):
+                            break
+                        label, name, price = items[idx]
+                        with col:
+                            st.markdown(
+                                f'<div class="card-box">'
+                                f'<div class="card-label">{label}</div>'
+                                f'<div class="card-name">{name}</div>'
+                                f'<div class="card-price">{dinh_dang_tien(price)}</div>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+                st.markdown(
+                    f'<div class="total-box">'
+                    f'<div class="total-label">TỔNG TIỀN</div>'
+                    f'<div class="total-value">{dinh_dang_tien(c["tong_tien"])}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                msg_lines = [
+                    "Đặt hàng cấu hình PC - TINHOCDAIPHUC.COM",
+                    f"Nhu cầu: {nhu_cau_label}",
+                    "",
+                    "1. CPU: " + c["cpu"]["ten_linh_kien"],
+                    "2. Main: " + c["main"]["ten_linh_kien"],
+                    "3. RAM: " + c["ram"]["ten_linh_kien"],
+                    "4. VGA: " + c["vga"]["ten_linh_kien"],
+                    "5. Nguồn: " + c["nguon"]["ten_linh_kien"],
+                    "6. Case: " + c["case"]["ten_linh_kien"],
+                    "",
+                    "Tổng tiền: " + dinh_dang_tien(c["tong_tien"]),
+                ]
+                zalo_message = "\n".join(msg_lines)
+                zalo_url = f"https://zalo.me/{ZALO_NUMBER}?text={quote(zalo_message)}"
+                st.markdown("")
+                st.link_button("💬 Chat Zalo & Đặt Ngay", zalo_url, type="primary", use_container_width=True)
 
-        # Tổng tiền nổi bật
-        st.markdown(
-            f'<div class="total-box">'
-            f'<div class="total-label">TỔNG TIỀN</div>'
-            f'<div class="total-value">{dinh_dang_tien(c["tong_tien"])}</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-        # Nội dung tin nhắn mẫu (tên 6 linh kiện + tổng tiền)
-        msg_lines = [
-            "Đặt hàng cấu hình PC - TINHOCDAIPHUC.COM",
-            "",
-            "1. CPU: " + c["cpu"]["ten_linh_kien"],
-            "2. Main: " + c["main"]["ten_linh_kien"],
-            "3. RAM: " + c["ram"]["ten_linh_kien"],
-            "4. VGA: " + c["vga"]["ten_linh_kien"],
-            "5. Nguồn: " + c["nguon"]["ten_linh_kien"],
-            "6. Case: " + c["case"]["ten_linh_kien"],
-            "",
-            "Tổng tiền: " + dinh_dang_tien(c["tong_tien"]),
-        ]
-        zalo_message = "\n".join(msg_lines)
-        zalo_url = f"https://zalo.me/{ZALO_NUMBER}?text={quote(zalo_message)}"
-
-        st.markdown("")  # khoảng cách
-        st.link_button("💬 Chat Zalo & Đặt Ngay", zalo_url, type="primary", use_container_width=True)
+            with tab1:
+                render_tab(bo_van_phong, "Văn phòng")
+            with tab2:
+                render_tab(bo_choi_game, "Chơi Game")
+            with tab3:
+                render_tab(bo_render, "Render & Đồ họa")
 
 
 if __name__ == "__main__":
